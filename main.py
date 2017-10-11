@@ -5,11 +5,11 @@ import logging
 from logging import handlers
 from Cryptodome.Cipher import AES
 from Cryptodome import Random
-import hashlib
 import re
 import csv
 import cmd
 import time
+import hashlib
 
 input_hosts = './input/hosts.csv'
 df_output = './output/df-results.csv'
@@ -18,25 +18,25 @@ conf_input = './input/upgrade-splunk.conf'
 copy_file_from = './input/splunk-6.6.3-e21ee54bc796-linux-2.6-x86_64.rpm'
 copy_file_to = '/tmp/aaa_splunkupgrade/software/splunk-6.6.3-e21ee54bc796-linux-2.6-x86_64.rpm'
 glob_flag = 0
-
+tail = '~'
 
 class RunCommand(cmd.Cmd):
     prompt = 'ssh> '
     intro = '''
+    \n\n\n\n
     Run commands in the prompt. 
     Type 'add_host servername,username' to add hosts to connect to. 
     Type 'connect' to open the SSH sessions.
     Type 'df -h /desireddirectory' to run the command on the hosts and output to './output/df-results.csv'
     Type 'shell username' to get an interactive for the specified username (if no username specified defaults to splunk)
     '''
-
     def __init__(self):
         cmd.Cmd.__init__(self)
         self.hosts = []
         self.connections = []
 
     def do_add_host(self, args):
-        # Use Add hosts to add more hosts to the input hosts file.
+        #Use Add hosts to add more hosts to the input hosts file.
         if args:
             try:
                 self.hosts.append(args.split(','))
@@ -59,7 +59,7 @@ class RunCommand(cmd.Cmd):
             print('Read %s hosts from file.' % count)
 
     def do_connect(self, args):
-        # Connect to all hosts in the hosts list
+        #Connect to all hosts in the hosts list
         count = 0
         for host in self.hosts:
             try:
@@ -107,22 +107,22 @@ class RunCommand(cmd.Cmd):
                 logger.error(err)
 
     def do_run(self, command):
-        # This is a general purpose function to run different commands in ssh
+        #This is a general purpose function to run different commands in ssh
         data = []
         if command:
-            for host, conn in zip(self.hosts, self.connections):
-                try:
-                    stdin, stdout, stderr = conn.exec_command(command)
-                    stdin.close()
-                    for line in stdout.read().splitlines():
-                        print('host: %s %s' % (host['hostname'], line.decode("utf-8")))
-                        data.append([host['hostname'], line.decode("utf-8")])
-                    for line in stderr.read().splitlines():
-                        logger.error('host: %s Message: %s' % (host['hostname'], line.decode("utf-8")))
-                        print('host: %s %s' % (host['hostname'], line.decode("utf-8")))
-                except os.error as err:
-                    err = host['hostname'] + ' ' + err
-                    logger.error(err)
+                for host, conn in zip(self.hosts, self.connections):
+                    try:
+                        stdin, stdout, stderr = conn.exec_command(command)
+                        stdin.close()
+                        for line in stdout.read().splitlines():
+                            print('host: %s %s' % (host['hostname'], line.decode("utf-8")))
+                            data.append([host['hostname'], line.decode("utf-8")])
+                        for line in stderr.read().splitlines():
+                            logger.error('host: %s Message: %s' % (host['hostname'], line.decode("utf-8")))
+                            print('host: %s %s' % (host['hostname'], line.decode("utf-8")))
+                    except os.error as err:
+                        err = host['hostname'] + ' ' + err
+                        logger.error(err)
         else:
             print("usage: run ")
 
@@ -225,7 +225,6 @@ def read_csv(filename):
     print('Read "%s"' % filename)
     return results
 
-
 BS = 16
 pad = lambda s: s + (BS - len(s) % BS) * chr(BS - len(s) % BS)
 unpad = lambda s: s[0:-s[-1]]
@@ -266,8 +265,7 @@ def log_to_file():
     if not os.path.exists('./upgrade-logs'):
         os.mkdir('./upgrade-logs')
     logger = logging.getLogger(__name__)
-    hdlr = handlers.RotatingFileHandler('./upgrade-logs/upgrade-log.txt', maxBytes=100000, backupCount=10,
-                                        encoding='UTF-8')
+    hdlr = handlers.RotatingFileHandler('./upgrade-logs/upgrade-log.txt', maxBytes=100000, backupCount=10, encoding='UTF-8')
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     hdlr.setFormatter(formatter)
     logger.addHandler(hdlr)
@@ -287,35 +285,53 @@ def get_creds():
 
 def send_shell(command, username, host, conn, should_print, password=''):
     buff = ''
-    prompt = '[{}@{} {}]$ '.format(username, host, '~')
-    prompt_command = '[{}@{} {}]$ {}'.format(username, host, '~', command)
+    global tail
+    prompt = '[{}@{} {}]$ '.format(username, host, tail)
+    prompt_command = '[{}@{} {}]$ {}'.format(username, host, tail, command)
     if password != '':
         conn.send(command + '\n')
         while not buff.endswith('password for {}: '.format(username)):
             resp = conn.recv(9999).decode('utf-8')
             buff += resp
-        time.sleep(1)
+        time.sleep(.1)
         conn.send(password + '\n')
     else:
-        conn.send(command + "\n")
-        if command != 'exit':
-            if command.startswith('cd '):
-                in_path = command.lstrip('cd ')
-                tail = os.path.basename(in_path)
-                prompt = '[{}@{} {}]$ '.format(username, host, tail)
-                prompt_command = '[{}@{} {}]$ {}'.format(username, host, tail, command)
-                time.sleep(.001)
-            while not buff.endswith(prompt):
-                resp = conn.recv(9999).decode('utf-8')
-                buff += resp
-                if should_print:
-                    for line in resp.splitlines():
-                        if line != (prompt or prompt_command):
-                            print('{}: {}'.format(host, line))
-
+        try:
+            if command != 'exit':
+                if command.startswith('cd '):
+                    in_path = command.lstrip('cd ')
+                    split = os.path.split(in_path)
+                    if split[0] == ('/' or '') and in_path != '..':
+                        tail = split[1]
+                    elif in_path == '..':
+                        conn.send('pwd\n')
+                        while not buff.endswith(prompt):
+                            resp = conn.recv(9999).decode('utf-8')
+                            buff += resp
+                            if should_print:
+                                for line in resp.splitlines():
+                                    if line.startswith('/'):
+                                        split = os.path.split(line)
+                                        tail = os.path.basename(split[0])
+                    else:
+                        tail = '~'
+                    prompt = '[{}@{} {}]$ '.format(username, host, tail)
+                    prompt_command = '[{}@{} {}]$ {}'.format(username, host, tail, command)
+        except os.error as err:
+            err = '{}: {}'.format(host, err)
+            logger.error(err)
+        finally:
+            conn.send(command + '\n')
+            if command != 'exit':
+                while not buff.endswith(prompt):
+                    resp = conn.recv(9999).decode('utf-8')
+                    buff += resp
+                    if should_print:
+                        for line in resp.splitlines():
+                            if line != (prompt or prompt_command):
+                                print('{}: {}'.format(host, line))
 
 logger = log_to_file()
-
 try:
     if not os.path.exists(conf_input):
         if not os.path.exists('./input'):
@@ -334,6 +350,7 @@ try:
         logger.info('Credentials Used.')
 except os.error as err:
     logger.error(err)
+
 try:
     if __name__ == '__main__':
         RunCommand().cmdloop()
