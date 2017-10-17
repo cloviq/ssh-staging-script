@@ -8,7 +8,6 @@ from Cryptodome import Random
 import re
 import csv
 import cmd
-import time
 import hashlib
 
 input_hosts = './input/hosts.csv'
@@ -17,7 +16,7 @@ log_file = './upgrade-logs/upgrade-log.txt'
 conf_input = './input/upgrade-splunk.conf'
 copy_file_from = './input/splunk-6.6.3-e21ee54bc796-linux-2.6-x86_64.rpm'
 copy_file_to = '/tmp/aaa_splunkupgrade/software/splunk-6.6.3-e21ee54bc796-linux-2.6-x86_64.rpm'
-glob_flag = 0
+host_keys = './input/host-keys.txt'
 tail = '~'
 
 class RunCommand(cmd.Cmd):
@@ -25,7 +24,7 @@ class RunCommand(cmd.Cmd):
     intro = '''
     \n\n\n\n
     Run commands in the prompt. 
-    Type 'add_host servername,username' to add hosts to connect to. 
+    Type read to load the input_hosts file into a dictionary. 
     Type 'connect' to open the SSH sessions.
     Type 'df -h /desireddirectory' to run the command on the hosts and output to './output/df-results.csv'
     Type 'shell username' to get an interactive for the specified username (if no username specified defaults to splunk)
@@ -34,47 +33,50 @@ class RunCommand(cmd.Cmd):
         cmd.Cmd.__init__(self)
         self.hosts = []
         self.connections = []
+        self.channels = []
+        self.count = 0
 
     def do_add_host(self, args):
-        #Use Add hosts to add more hosts to the input hosts file.
+        # Use Add hosts to add more to connect to
         if args:
             try:
                 self.hosts.append(args.split(','))
             except os.error as err:
                 logger.error(err)
-        else:
-            try:
-                file_hosts = read_csv(input_hosts)
-                creds = get_creds()
-                count = 0
-                for f_host in file_hosts:
-                    for user in creds:
-                        if f_host['username'] == user['username']:
-                            ePassword = user['ePassword']
-                    f_host['ePassword'] = ePassword
-                    self.hosts.append(f_host)
-                    count += 1
-            except os.error as err:
-                logger.error(err)
-            print('Read %s hosts from file.' % count)
 
     def do_connect(self, args):
-        #Connect to all hosts in the hosts list
-        count = 0
+        # Connect to all hosts in the hosts list
         for host in self.hosts:
             try:
                 client = paramiko.SSHClient()
-                client.set_missing_host_key_policy(
-                    paramiko.AutoAddPolicy())
+                try:
+                    if not os.path.exists(host_keys):
+                        with open(host_keys, 'w+') as create:
+                            create.close()
+                    client.load_host_keys(host_keys)
+                except os.error as err:
+                    logger.error(err)
+                client.set_missing_host_key_policy(paramiko.RejectPolicy())
                 client.connect(host['hostname'],
                                username=host['username'],
                                password=decrypt_password(host['ePassword']))
                 self.connections.append(client)
-                count += 1
+                self.count += 1
             except paramiko.AuthenticationException as err:
                 err = host['hostname'] + ' ' + err
                 logger.error(err)
-        self.prompt = 'ssh %s connected> ' % count
+            except paramiko.SSHException as err:
+                print(err)
+                add_host = input('Do you want to add the host to known hosts? y/n: ')
+                if add_host == 'y':
+                    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    client.connect(host['hostname'],
+                                   username=host['username'],
+                                   password=decrypt_password(host['ePassword']))
+                    self.connections.append(client)
+                    self.count += 1
+                logger.error(err)
+        self.prompt = 'ssh {} connected> '.format(self.count)
 
     def do_sftp_put(self, args, local_file=copy_file_from, remote_file=copy_file_to):
         for host, conn in zip(self.hosts, self.connections):
@@ -107,7 +109,7 @@ class RunCommand(cmd.Cmd):
                 logger.error(err)
 
     def do_run(self, command):
-        #This is a general purpose function to run different commands in ssh
+        # This is a general purpose function to run different commands in ssh
         data = []
         if command:
                 for host, conn in zip(self.hosts, self.connections):
@@ -127,7 +129,6 @@ class RunCommand(cmd.Cmd):
             print("usage: run ")
 
     def do_shell(self, args):
-        channel_list = []
         shell_input = ''
         user = 'splunk'
         if args:
@@ -137,15 +138,18 @@ class RunCommand(cmd.Cmd):
                 channel = conn.invoke_shell()
                 hostname = (re.sub('.itsc.hhs-itsc.local', '', host['hostname']))
                 password = (decrypt_password(host['ePassword']))
-                send_shell('sudo su - {}'.format(user), host['username'], hostname, channel, False, password=password)
+                if host['username'] != 'root':
+                    send_shell('sudo su - {}'.format(user), host['username'], hostname, channel, False, password)
+                else:
+                    send_shell('su - {}'.format(user), user, hostname, channel, False)
                 send_shell('\n', user, hostname, channel, False)
-                channel_list.append(channel)
+                self.channels.append(channel)
             except os.error as err:
                 err = host['hostname'] + ' ' + err
                 logger.error(err)
         while shell_input != 'exit':
-            shell_input = input('shell> ')
-            for host, session in zip(self.hosts, channel_list):
+            shell_input = input('shell {}> '.format(self.count))
+            for host, session in zip(self.hosts, self.channels):
                 try:
                     hostname = re.sub('.itsc.hhs-itsc.local', '', host['hostname'])
                     send_shell(shell_input, user, hostname, session, True)
@@ -154,11 +158,20 @@ class RunCommand(cmd.Cmd):
                     logger.error(err)
 
     def do_read(self, args):
-        if args == './input/hosts.csv':
-            in_hosts = read_csv(args)
-            for host in in_hosts:
-                self.hosts.append(host)
-        read_csv(args)
+        try:
+            file_hosts = read_csv(input_hosts)
+            creds = get_creds()
+            count = 0
+            for f_host in file_hosts:
+                for user in creds:
+                    if f_host['username'] == user['username']:
+                        ePassword = user['ePassword']
+                f_host['ePassword'] = ePassword
+                self.hosts.append(f_host)
+                count += 1
+        except os.error as err:
+            logger.error(err)
+        print('Read {} hosts from file.'.format(count))
 
     def do_df(self, args):
         data = []
@@ -191,15 +204,24 @@ class RunCommand(cmd.Cmd):
             print('Output written to %s.' % df_output)
 
     def do_close(self, args):
-        for conn in self.connections:
+        for conn, session in zip(self.connections, self.channels):
             try:
                 conn.close()
+                session.close()
             except os.error as err:
                 logger.error(err)
         print('Disconnected from SSH Sessions.')
         self.prompt = 'ssh> '
 
     def do_exit(self, args):
+        for conn, session in zip(self.connections, self.channels):
+            try:
+                conn.close()
+                session.close()
+            except os.error as err:
+                logger.error(err)
+        print('Disconnected from SSH Sessions.')
+        self.prompt = 'ssh> '
         return True
 
 
@@ -265,7 +287,8 @@ def log_to_file():
     if not os.path.exists('./upgrade-logs'):
         os.mkdir('./upgrade-logs')
     logger = logging.getLogger(__name__)
-    hdlr = handlers.RotatingFileHandler('./upgrade-logs/upgrade-log.txt', maxBytes=100000, backupCount=10, encoding='UTF-8')
+    hdlr = handlers.RotatingFileHandler('./upgrade-logs/upgrade-log.txt',
+                                        maxBytes=100000, backupCount=10, encoding='UTF-8')
     formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
     hdlr.setFormatter(formatter)
     logger.addHandler(hdlr)
@@ -293,7 +316,6 @@ def send_shell(command, username, host, conn, should_print, password=''):
         while not buff.endswith('password for {}: '.format(username)):
             resp = conn.recv(9999).decode('utf-8')
             buff += resp
-        time.sleep(.1)
         conn.send(password + '\n')
     else:
         try:
