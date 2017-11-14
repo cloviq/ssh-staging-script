@@ -1,3 +1,9 @@
+'''
+Script for interfacing with multiple SSH sessions
+Functions for sudo and su
+Written by: Carlo Viqueira
+'''
+
 import os
 import paramiko
 import base64
@@ -41,7 +47,7 @@ class RunCommand(cmd.Cmd):
         if args:
             try:
                 self.hosts.append(args.split(','))
-            except os.error as err:
+            except Exception as err:
                 logger.error(err)
 
     def do_connect(self, args):
@@ -54,7 +60,7 @@ class RunCommand(cmd.Cmd):
                         with open(host_keys, 'w+') as create:
                             create.close()
                     client.load_host_keys(host_keys)
-                except os.error as err:
+                except Exception as err:
                     logger.error(err)
                 client.set_missing_host_key_policy(paramiko.RejectPolicy())
                 client.connect(host['hostname'],
@@ -85,7 +91,7 @@ class RunCommand(cmd.Cmd):
                 ftp.put(local_file, remote_file)
                 print('Copied %s to %s on %s' % (local_file, remote_file, host['hostname']))
                 ftp.close()
-            except(paramiko.SFTPError, os.error) as err:
+            except(paramiko.SFTPError, Exception) as err:
                 err = host['hostname'] + ' ' + err
                 logger.error(err)
 
@@ -104,7 +110,7 @@ class RunCommand(cmd.Cmd):
                         t_line = line.decode("utf-8")
                         print('host: %s %s' % (host['hostname'], t_line))
                     print('host: %s return value: %s' % (host['hostname'], stdout.channel.recv_exit_status()))
-            except os.error as err:
+            except Exception as err:
                 err = host['hostname'] + ' ' + err
                 logger.error(err)
 
@@ -122,7 +128,7 @@ class RunCommand(cmd.Cmd):
                         for line in stderr.read().splitlines():
                             logger.error('host: %s Message: %s' % (host['hostname'], line.decode("utf-8")))
                             print('host: %s %s' % (host['hostname'], line.decode("utf-8")))
-                    except os.error as err:
+                    except Exception as err:
                         err = host['hostname'] + ' ' + err
                         logger.error(err)
         else:
@@ -144,18 +150,22 @@ class RunCommand(cmd.Cmd):
                     send_shell('su - {}'.format(user), user, hostname, channel, False)
                 send_shell('\n', user, hostname, channel, False)
                 self.channels.append(channel)
-            except os.error as err:
+            except Exception as err:
                 err = host['hostname'] + ' ' + err
                 logger.error(err)
+                continue
         while shell_input != 'exit':
             shell_input = input('shell {}> '.format(self.count))
             for host, session in zip(self.hosts, self.channels):
                 try:
                     hostname = re.sub('.itsc.hhs-itsc.local', '', host['hostname'])
                     send_shell(shell_input, user, hostname, session, True)
-                except os.error as err:
+                except Exception as err:
                     err = host['hostname'] + ' ' + err
                     logger.error(err)
+                    continue
+        for channel in self.channels:
+            channel.close()
 
     def do_read(self, args):
         try:
@@ -169,7 +179,7 @@ class RunCommand(cmd.Cmd):
                 f_host['ePassword'] = ePassword
                 self.hosts.append(f_host)
                 count += 1
-        except os.error as err:
+        except Exception as err:
             logger.error(err)
         print('Read {} hosts from file.'.format(count))
 
@@ -195,30 +205,28 @@ class RunCommand(cmd.Cmd):
                             data.append(t_line.split(','))
                     for line in stderr.read().splitlines():
                         logger.error('host: %s Message: %s' % (host['hostname'], line.decode("utf-8")))
-                except os.error as err:
+                except Exception as err:
                     logger.error(err)
             try:
                 write_csv(df_output, data)
-            except os.error as err:
+            except Exception as err:
                 logger.error(err)
             print('Output written to %s.' % df_output)
 
     def do_close(self, args):
-        for conn, session in zip(self.connections, self.channels):
+        for conn in self.connections:
             try:
                 conn.close()
-                session.close()
-            except os.error as err:
+            except Exception as err:
                 logger.error(err)
         print('Disconnected from SSH Sessions.')
         self.prompt = 'ssh> '
 
     def do_exit(self, args):
-        for conn, session in zip(self.connections, self.channels):
+        for conn in self.connections:
             try:
                 conn.close()
-                session.close()
-            except os.error as err:
+            except Exception as err:
                 logger.error(err)
         print('Disconnected from SSH Sessions.')
         self.prompt = 'ssh> '
@@ -297,6 +305,7 @@ def log_to_file():
 
 
 def get_creds():
+    global conf_input
     fieldnames = ['username', 'ePassword']
     dicts_from_file = []
     with open(conf_input, 'r') as inf:
@@ -339,7 +348,7 @@ def send_shell(command, username, host, conn, should_print, password=''):
                         tail = '~'
                     prompt = '[{}@{} {}]$ '.format(username, host, tail)
                     prompt_command = '[{}@{} {}]$ {}'.format(username, host, tail, command)
-        except os.error as err:
+        except Exception as err:
             err = '{}: {}'.format(host, err)
             logger.error(err)
         finally:
@@ -370,12 +379,12 @@ try:
         cred_set = get_creds()
         out_pass = decrypt_password(cred_set[0]['ePassword'])
         logger.info('Credentials Used.')
-except os.error as err:
+except Exception as err:
     logger.error(err)
 
 try:
     if __name__ == '__main__':
         RunCommand().cmdloop()
     logger.info('Command Loop run.')
-except os.error as err:
+except Exception as err:
     logger.error(err)
