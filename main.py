@@ -1,5 +1,5 @@
 '''
-Script for interfacing with multiple SSH sessions
+Script for interfacing with multiple remote *nix hosts
 Functions for sudo and su
 Written by: Carlo Viqueira
 '''
@@ -82,6 +82,10 @@ class RunCommand(cmd.Cmd):
                     self.connections.append(client)
                     self.count += 1
                 logger.error(err)
+            except Exception as err:
+                err = '{} {}'.format(host['hostname'], err)
+                logger.error(err)
+
         self.prompt = 'ssh {} connected> '.format(self.count)
 
     def do_sftp_put(self, args, local_file=copy_file_from, remote_file=copy_file_to):
@@ -91,8 +95,11 @@ class RunCommand(cmd.Cmd):
                 ftp.put(local_file, remote_file)
                 print('Copied %s to %s on %s' % (local_file, remote_file, host['hostname']))
                 ftp.close()
-            except(paramiko.SFTPError, Exception) as err:
+            except paramiko.SFTPError as err:
                 err = host['hostname'] + ' ' + err
+                logger.error(err)
+            except Exception as err:
+                err = '{} {}'.format(host['hostname'], err)
                 logger.error(err)
 
     def do_sudo(self, command):
@@ -111,7 +118,7 @@ class RunCommand(cmd.Cmd):
                         print('host: %s %s' % (host['hostname'], t_line))
                     print('host: %s return value: %s' % (host['hostname'], stdout.channel.recv_exit_status()))
             except Exception as err:
-                err = host['hostname'] + ' ' + err
+                err = '{} {}'.format(host['hostname'], err)
                 logger.error(err)
 
     def do_run(self, command):
@@ -129,7 +136,7 @@ class RunCommand(cmd.Cmd):
                             logger.error('host: %s Message: %s' % (host['hostname'], line.decode("utf-8")))
                             print('host: %s %s' % (host['hostname'], line.decode("utf-8")))
                     except Exception as err:
-                        err = host['hostname'] + ' ' + err
+                        err = '{} {}'.format(host['hostname'], err)
                         logger.error(err)
         else:
             print("usage: run ")
@@ -151,7 +158,7 @@ class RunCommand(cmd.Cmd):
                 send_shell('\n', user, hostname, channel, False)
                 self.channels.append(channel)
             except Exception as err:
-                err = host['hostname'] + ' ' + err
+                err = '{} {}'.format(host['hostname'], err)
                 logger.error(err)
                 continue
         while shell_input != 'exit':
@@ -161,11 +168,12 @@ class RunCommand(cmd.Cmd):
                     hostname = re.sub('.itsc.hhs-itsc.local', '', host['hostname'])
                     send_shell(shell_input, user, hostname, session, True)
                 except Exception as err:
-                    err = host['hostname'] + ' ' + err
+                    err = '{} {}'.format(host['hostname'], err)
                     logger.error(err)
                     continue
         for channel in self.channels:
             channel.close()
+        self.channels = []
 
     def do_read(self, args):
         try:
@@ -206,6 +214,7 @@ class RunCommand(cmd.Cmd):
                     for line in stderr.read().splitlines():
                         logger.error('host: %s Message: %s' % (host['hostname'], line.decode("utf-8")))
                 except Exception as err:
+                    err = '{} {}'.format(host['hostname'], err)
                     logger.error(err)
             try:
                 write_csv(df_output, data)
