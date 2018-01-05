@@ -15,6 +15,7 @@ import re
 import csv
 import cmd
 import hashlib
+import time
 
 input_hosts = './input/hosts.csv'
 df_output = './output/df-results.csv'
@@ -23,7 +24,10 @@ conf_input = './input/upgrade-splunk.conf'
 copy_file_from = './input/splunk-6.6.3-e21ee54bc796-linux-2.6-x86_64.rpm'
 copy_file_to = '/tmp/aaa_splunkupgrade/software/splunk-6.6.3-e21ee54bc796-linux-2.6-x86_64.rpm'
 host_keys = './input/host-keys.txt'
-tail = '~'
+tail = 'splunk'
+domain = '.clolab.loc'
+prompt_pattern = "(?i)(\[[a-z\-\_0-9]*@[a-z\-\_0-9]*\s[a-z\-\_\~0-9]*][\#\$]{1}\s)"
+match_pattern = re.compile(prompt_pattern)
 
 class RunCommand(cmd.Cmd):
     prompt = 'ssh> '
@@ -149,13 +153,13 @@ class RunCommand(cmd.Cmd):
         for host, conn in zip(self.hosts, self.connections):
             try:
                 channel = conn.invoke_shell()
-                hostname = (re.sub('.itsc.hhs-itsc.local', '', host['hostname']))
+                hostname = (re.sub(domain, '', host['hostname']))
                 password = (decrypt_password(host['ePassword']))
                 if host['username'] != 'root':
                     send_shell('sudo su - {}'.format(user), host['username'], hostname, channel, False, password)
+                    send_shell('\n', user, hostname, channel, False)
                 else:
-                    send_shell('su - {}'.format(user), user, hostname, channel, False)
-                send_shell('\n', user, hostname, channel, False)
+                    send_shell('su - {}'.format(user), user, hostname, channel, False, 'root')
                 self.channels.append(channel)
             except Exception as err:
                 err = '{} {}'.format(host['hostname'], err)
@@ -165,7 +169,7 @@ class RunCommand(cmd.Cmd):
             shell_input = input('shell {}> '.format(self.count))
             for host, session in zip(self.hosts, self.channels):
                 try:
-                    hostname = re.sub('.itsc.hhs-itsc.local', '', host['hostname'])
+                    hostname = re.sub(domain, '', host['hostname'])
                     send_shell(shell_input, user, hostname, session, True)
                 except Exception as err:
                     err = '{} {}'.format(host['hostname'], err)
@@ -327,49 +331,54 @@ def get_creds():
 def send_shell(command, username, host, conn, should_print, password=''):
     buff = ''
     global tail
-    prompt = '[{}@{} {}]$ '.format(username, host, tail)
-    prompt_command = '[{}@{} {}]$ {}'.format(username, host, tail, command)
-    if password != '':
+    #prompt = '[{}@{} {}]$ '.format(username, host, tail)
+    #prompt_command = '[{}@{} {}]$ {}'.format(username, host, tail, command)
+    if password not in ('', 'root'):
         conn.send(command + '\n')
         while not buff.endswith('password for {}: '.format(username)):
             resp = conn.recv(9999).decode('utf-8')
             buff += resp
         conn.send(password + '\n')
-    else:
+        conn.send('\n')
+    elif password == 'root':
+        conn.send(command + '\n')
         try:
-            if command != 'exit':
-                if command.startswith('cd '):
-                    in_path = command.lstrip('cd ')
-                    split = os.path.split(in_path)
-                    if split[0] == ('/' or '') and in_path != '..':
-                        tail = split[1]
-                    elif in_path == '..':
-                        conn.send('pwd\n')
-                        while not buff.endswith(prompt):
-                            resp = conn.recv(9999).decode('utf-8')
-                            buff += resp
-                            if should_print:
-                                for line in resp.splitlines():
-                                    if line.startswith('/'):
-                                        split = os.path.split(line)
-                                        tail = os.path.basename(split[0])
-                    else:
-                        tail = '~'
-                    prompt = '[{}@{} {}]$ '.format(username, host, tail)
-                    prompt_command = '[{}@{} {}]$ {}'.format(username, host, tail, command)
+            while True:
+                resp = conn.recv(9999).decode('utf-8')
+                buff += resp
+                conn.send('\n')
+                match = match_pattern.findall(buff)
+                if buff.endswith(tuple(match)):
+                    break
         except Exception as err:
             err = '{}: {}'.format(host, err)
             logger.error(err)
-        finally:
-            conn.send(command + '\n')
+    else:
+        try:
+            conn.send(command)
+            conn.send('\n')
+            count = 0
             if command != 'exit':
-                while not buff.endswith(prompt):
+                while True:
                     resp = conn.recv(9999).decode('utf-8')
-                    buff += resp
+                    match = match_pattern.findall(resp)
+                    prompt_command = f'{match[0]}{command}'
+                    #check_match = match.group(1)
+                    #check_match_cmd = f'{check_match}{command}'
+
                     if should_print:
                         for line in resp.splitlines():
-                            if line != (prompt or prompt_command):
+                            if line not in (match[0] or prompt_command):
                                 print('{}: {}'.format(host, line))
+                        time.sleep(.001)
+                    if resp.endswith(tuple(match)) and count > 0:
+                        break
+                    count += 1
+                    time.sleep(.001)
+        except Exception as err:
+            err = '{}: {}'.format(host, err)
+            logger.error(err)
+
 
 logger = log_to_file()
 try:
